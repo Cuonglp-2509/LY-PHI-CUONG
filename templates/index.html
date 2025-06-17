@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="{{ session.get('language', 'en') }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ translations.title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .sidebar {
+            transition: transform 0.3s ease-in-out;
+        }
+        .sidebar-hidden {
+            transform: translateX(-100%);
+        }
+        .alert-blink {
+            animation: blink 1s infinite;
+        }
+        .bell-blink {
+            animation: bellBlink 1s infinite;
+        }
+        @keyframes blink {
+            50% { opacity: 0.3; }
+        }
+        @keyframes bellBlink {
+            50% { color: rgba(239, 68, 68, 0.5); }
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes fadeIn {
+            0% { opacity: 0; transform: translateY(10px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+        .video-container, .webcam-container {
+            position: relative;
+            overflow: hidden;
+            background: #000;
+        }
+        #webcam-stream, #uploadedVideo, #predict-stream {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #uploadedVideo.hidden {
+            display: none;
+        }
+        .active-tab {
+            font-weight: bold;
+            border: 2px solid #2563eb;
+            padding: 6px 12px;
+            border-radius: 4px;
+        }
+        .hazard-alert {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 1000;
+            animation: blink 1s infinite;
+        }
+        .close-btn {
+            position: absolute;
+            top: 0;
+            right: 0;
+            cursor: pointer;
+            padding: 0.5rem;
+        }
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <!-- Sidebar -->
+    <div class="fixed inset-y-0 left-0 w-64 bg-white shadow-lg sidebar" id="sidebar">
+        <div class="p-4 flex items-center justify-center">
+            <img src="/static/Imgs/CNU_logo.png" alt="CNU Logo" class="h-12 mr-2">
+            <img src="/static/Imgs/Safemotion_logo.png" alt="SafeMotion Logo" class="h-12">
+        </div>
+        <nav class="mt-4">
+            <a href="#dashboard" class="block px-4 py-2 text-gray-600 hover:text-blue-600 tab-link {{ 'active-tab' if request.path == '/' or request.path == '/#dashboard' }}" data-tab="dashboard">{{ translations.dashboard_tab }}</a>
+            <a href="#camera" class="block px-4 py-2 text-gray-600 hover:text-blue-600 tab-link {{ 'active-tab' if request.path == '/#camera' }}" data-tab="camera">{{ translations.camera_tab }}</a>
+            <a href="#video" class="block px-4 py-2 text-gray-600 hover:text-blue-600 tab-link {{ 'active-tab' if request.path == '/#video' }}" data-tab="video">{{ translations.video_tab }}</a>
+            <a href="#settings" class="block px-4 py-2 text-gray-600 hover:text-blue-600 tab-link {{ 'active-tab' if request.path == '/#settings' }}" data-tab="settings">{{ translations.settings_tab }}</a>
+            <a href="{{ url_for('logout') }}" class="block px-4 py-2 text-red-600 hover:bg-red-100">{{ translations.logout }}</a>
+        </nav>
+        <div class="p-4 mt-4">
+            <label class="block text-gray-700 font-semibold mb-2">{{ translations.language_label }}</label>
+            <form method="POST" action="{{ url_for('set_language') }}">
+                <select name="language" onchange="this.form.submit()" class="border rounded-lg px-4 py-2 w-full">
+                    <option value="en" {% if session.get('language') == 'en' %}selected{% endif %}>English</option>
+                    <option value="ko" {% if session.get('language') == 'ko' %}selected{% endif %}>한국어</option>
+                </select>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="ml-64 p-6">
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">{{ translations.header }}</h1>
+            <button id="toggle-sidebar" class="text-gray-600 hover:text-gray-800">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            </button>
+        </div>
+
+        <!-- Tab Content -->
+        <div id="tab-content">
+            <!-- Dashboard -->
+            <div id="dashboard" class="tab-pane {{ 'active' if request.path == '/' or request.path == '/#dashboard' else 'hidden' }}">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-lg shadow-md">
+                        <h3 class="text-lg font-semibold mb-4">{{ translations.daily_chart_title }}</h3>
+                        <canvas id="daily-chart"></canvas>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow-md">
+                        <h3 class="text-lg font-semibold mb-4">{{ translations.monthly_chart_title }}</h3>
+                        <canvas id="monthly-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Camera Input -->
+            <div id="camera" class="tab-pane {{ 'active' if request.path == '/#camera' else 'hidden' }}">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2">
+                        <div class="bg-white p-4 rounded-lg shadow-md webcam-container" id="webcam-container">
+                            <img src="{{ url_for('video_feed') }}" id="webcam-stream" alt="Webcam Stream">
+                        </div>
+                        <div class="mt-4 flex space-x-4">
+                            <select id="webcam-index" class="border rounded-lg px-4 py-2">
+                                <option value="0" selected>Webcam ID 0</option>
+                                <option value="1">Webcam ID 1</option>
+                                <option value="2">Webcam ID 2</option>
+                                <option value="3">Webcam ID 3</option>
+                            </select>
+                            <select id="frame-size-camera" class="border rounded-lg px-4 py-2" onchange="updateFrameSize('camera')">
+                                <option value="304x228">304x228</option>
+                                <option value="640x480" selected>640x480</option>
+                                <option value="1280x720">1280x720</option>
+                            </select>
+                            <button onclick="startWebcam()" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600">{{ translations.start_button }}</button>
+                            <button onclick="stopWebcam()" class="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600">{{ translations.stop_button }}</button>
+                            <button onclick="shutdownServer()" class="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600">{{ translations.shutdown_button }}</button>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="bg-white p-4 rounded-lg shadow-md">
+                            <h3 class="text-lg font-semibold mb-4">{{ translations.detection_log }}</h3>
+                            <div class="max-h-96 overflow-y-auto">
+                                <table class="w-full text-left">
+                                    <thead>
+                                        <tr class="bg-gray-100">
+                                            <th class="p-2">Time</th>
+                                            <th class="p-2">Person ID</th>
+                                            <th class="p-2">Behavior</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="detection-log">
+                                        {% for detection in detections %}
+                                            <tr class="fade-in">
+                                                <td class="p-2">{{ detection.time }}</td>
+                                                <td class="p-2">{{ detection.person_id }}</td>
+                                                <td class="p-2">{{ detection.action }}</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="mt-4 flex space-x-4">
+                                <button onclick="saveDetections()" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600">{{ translations.save_log_button }}</button>
+                                <button onclick="clearDetections()" class="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600">{{ translations.clear_log_button }}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Video Input -->
+            <div id="video" class="tab-pane {{ 'active' if request.path == '/#video' else 'hidden' }}">
+                <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+                    <input type="file" id="videoFile" accept="video/mp4,video/avi" class="mb-4" onchange="uploadVideo()">
+                    <div class="flex space-x-4">
+                        <button onclick="predictVideo()" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600">{{ translations.predict_actions_button }}</button>
+                        <button onclick="clearVideoDetections()" class="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600">{{ translations.clear_video_log_button }}</button>
+                        <button onclick="saveVideoResult()" class="bg-teal-500 text-white px-4 py-2 rounded-lg hover:bg-teal-600">{{ translations.save_results_button }}</button>
+                    </div>
+                    <div class="mt-4 hidden" id="video-progress">
+                        <div class="bg-gray-200 rounded-full h-6">
+                            <div id="video-progress-bar" class="bg-blue-500 h-6 rounded-full text-center text-white progress-bar"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="bg-white p-4 rounded-lg shadow-md video-container" id="uploaded-video-container">
+                                <video id="uploadedVideo" controls class="w-full h-auto hidden"></video>
+                            </div>
+                            <div class="bg-white p-4 rounded-lg shadow-md video-container" id="predict-video-container">
+                                <img src="{{ url_for('video_predict_feed') }}" id="predict-stream" alt="Prediction Stream">
+                            </div>
+                        </div>
+                        <div class="mt-4 flex space-x-4">
+                            <label class="block text-gray-700 font-semibold mb-2">{{ translations.frame_size_label }}</label>
+                            <select id="frame-size-video" class="border rounded-lg px-4 py-2" onchange="updateFrameSize('video')">
+                                <option value="304x228">304x228</option>
+                                <option value="640x480" selected>640x480</option>
+                                <option value="1280x720">1280x720</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="bg-white p-4 rounded-lg shadow-md">
+                            <h3 class="text-lg font-semibold mb-4">{{ translations.video_detection_log }}</h3>
+                            <div class="max-h-96 overflow-y-auto">
+                                <table class="w-full text-left">
+                                    <thead>
+                                        <tr class="bg-gray-100">
+                                            <th class="p-2">Time</th>
+                                            <th class="p-2">Person ID</th>
+                                            <th class="p-2">Behavior</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="video-detection-log">
+                                        {% for detection in video_detections %}
+                                            <tr class="fade-in">
+                                                <td class="p-2">{{ detection.time }}</td>
+                                                <td class="p-2">{{ detection.person_id }}</td>
+                                                <td class="p-2">{{ detection.action }}</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings -->
+            <div id="settings" class="tab-pane {{ 'active' if request.path == '/#settings' else 'hidden' }}">
+                <div class="bg-white p-6 rounded-lg shadow-md">
+                    <h3 class="text-lg font-semibold mb-4">{{ translations.settings_tab }}</h3>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 font-semibold mb-2">{{ translations.admin_phone_label }}</label>
+                        <input type="text" id="admin-phone" value="{{ ADMIN_PHONE_NUMBER }}" class="border rounded-lg px-4 py-2 w-full" disabled>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 font-semibold mb-2">{{ translations.alert_sensitivity_label }}</label>
+                        <div class="flex items-center space-x-4">
+                            <select id="alert-sensitivity" class="border rounded-lg px-4 py-2 w-1/2" onchange="updateSensitivityTime()">
+                                <option value="low">{{ translations.low }}</option>
+                                <option value="medium" selected>{{ translations.medium }}</option>
+                                <option value="high">{{ translations.high }}</option>
+                            </select>
+                            <input type="number" id="sensitivity-time" min="1" class="border rounded-lg px-4 py-2 w-1/2" placeholder="Time in minutes">
+                        </div>
+                        <p class="text-gray-500 text-sm mt-2">Low: 1 min, Medium: 5 mins, High: 10 mins (or enter custom value)</p>
+                    </div>
+                    <button onclick="saveSettings()" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600">{{ translations.save_settings_button }}</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hazard Alert Notification -->
+        <div id="hazard-alert" class="hazard-alert bg-red-500 text-white p-6 rounded-lg shadow-lg hidden">
+            <button class="close-btn text-white" onclick="closeHazardAlert()">X</button>
+            <p id="hazard-message" class="text-lg font-bold"></p>
+            <p id="hazard-time" class="text-sm"></p>
+        </div>
+
+        <!-- Bell Notification -->
+        <div id="bell-notification" class="fixed top-4 right-16 text-red-500 text-4xl hidden">
+            <svg class="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"></path></svg>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let webcamOn = false;
+        let videoUploaded = false;
+        let isPredicting = false;
+
+        socket.on('hazard_alert', (data) => {
+            const alert = document.getElementById('hazard-alert');
+            const message = document.getElementById('hazard-message');
+            const time = document.getElementById('hazard-time');
+            message.textContent = data.message;
+            time.textContent = data.time;
+            alert.classList.add('alert-blink');
+            alert.classList.remove('hidden');
+            const bell = document.getElementById('bell-notification');
+            bell.classList.add('bell-blink');
+            bell.classList.remove('hidden');
+        });
+
+        function closeHazardAlert() {
+            const alert = document.getElementById('hazard-alert');
+            alert.classList.add('hidden');
+            alert.classList.remove('alert-blink');
+            const bell = document.getElementById('bell-notification');
+            bell.classList.add('hidden');
+            bell.classList.remove('bell-blink');
+        }
+
+        function showStatus(message, type = 'info') {
+            const alert = document.createElement('div');
+            alert.className = `fixed top-4 right-4 bg-${type === 'success' ? 'green' : type === 'danger' ? 'red' : 'blue'}-500 text-white p-4 rounded shadow-lg fade-in`;
+            alert.textContent = message;
+            document.body.appendChild(alert);
+            setTimeout(() => alert.remove(), 3000);
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('sidebar-hidden');
+        }
+
+        function updateFrameSize(type) {
+            const selectId = type === 'video' ? 'frame-size-video' : 'frame-size-camera';
+            const frameSize = document.getElementById(selectId).value.split('x');
+            const width = parseInt(frameSize[0]);
+            const height = parseInt(frameSize[1]);
+
+            if (type === 'camera') {
+                const webcamContainer = document.getElementById('webcam-container');
+                webcamContainer.style.width = `${width}px`;
+                webcamContainer.style.height = `${height}px`;
+            } else if (type === 'video') {
+                const uploadedVideoContainer = document.getElementById('uploaded-video-container');
+                const predictVideoContainer = document.getElementById('predict-video-container');
+                uploadedVideoContainer.style.width = `${width}px`;
+                uploadedVideoContainer.style.height = `${height}px`;
+                predictVideoContainer.style.width = `${width}px`;
+                predictVideoContainer.style.height = `${height}px`;
+            }
+
+            fetch('/set_frame_size', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ width, height, type })
+            });
+        }
+
+        function startWebcam() {
+            const webcamIndex = document.getElementById('webcam-index').value;
+            fetch('/start_webcam', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ index: webcamIndex })
+            })
+            .then(response => response.json())
+            .then(data => {
+                webcamOn = data.status;
+                if (webcamOn) {
+                    document.getElementById('webcam-stream').src = '/video_feed?t=' + new Date().getTime();
+                    showStatus("Webcam started", "success");
+                } else {
+                    showStatus(data.message || "Cannot start webcam", "danger");
+                }
+                updateDetectionLog();
+            });
+        }
+
+        function stopWebcam() {
+            fetch('/stop_webcam', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    webcamOn = data.status;
+                    document.getElementById('webcam-stream').src = '/video_feed';
+                    showStatus("Webcam stopped", "success");
+                    updateDetectionLog();
+                });
+        }
+
+        function shutdownServer() {
+            if (confirm("Are you sure you want to shutdown the server?")) {
+                fetch('/shutdown', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        showStatus(data.statusText, "info");
+                        setTimeout(() => window.location.reload(), 1000);
+                    });
+            }
+        }
+
+        function updateDetectionLog() {
+            fetch('/get_detections')
+                .then(response => response.json())
+                .then(data => {
+                    const log = document.getElementById('detection-log');
+                    log.innerHTML = '';
+                    data.detections.forEach(detection => {
+                        log.innerHTML += `
+                            <tr class="fade-in">
+                                <td class="p-2">${detection.time}</td>
+                                <td class="p-2">${detection.person_id}</td>
+                                <td class="p-2">${detection.action}</td>
+                            </tr>`;
+                    });
+                });
+        }
+
+        function updateVideoDetectionLog() {
+            fetch('/get_video_detections')
+                .then(response => response.json())
+                .then(data => {
+                    const log = document.getElementById('video-detection-log');
+                    log.innerHTML = '';
+                    data.detections.forEach(detection => {
+                        log.innerHTML += `
+                            <tr class="fade-in">
+                                <td class="p-2">${detection.time}</td>
+                                <td class="p-2">${detection.person_id}</td>
+                                <td class="p-2">${detection.action}</td>
+                            </tr>`;
+                    });
+                });
+        }
+
+        function updateVideoProgress() {
+            if (!isPredicting) return;
+            fetch('/get_video_predict_progress')
+                .then(response => response.json())
+                .then(data => {
+                    const progressBar = document.getElementById('video-progress-bar');
+                    const progress = document.getElementById('video-progress');
+                    progress.classList.remove('hidden');
+                    progressBar.style.width = data.progress + '%';
+                    progressBar.textContent = Math.round(data.progress) + '%';
+                    if (data.progress >= 100) {
+                        isPredicting = false;
+                        setTimeout(() => {
+                            progress.classList.add('hidden');
+                            progressBar.style.width = '0%';
+                            progressBar.textContent = '';
+                        }, 1000);
+                    }
+                });
+        }
+
+        function updateCharts() {
+            fetch('/get_detections')
+                .then(response => response.json())
+                .then(data => {
+                    const today = new Date().toISOString().split('T')[0];
+                    const todayDetections = data.detections.filter(d => d.full_time.startsWith(today));
+                    const monthDetections = data.detections.filter(d => d.full_time.startsWith(today.substring(0, 7)));
+
+                    const dailyLabels = Array.from({ length: 24 }, (_, i) => `${i}:00`);
+                    const dailyData = dailyLabels.map((_, i) => todayDetections.filter(d => {
+                        const hour = new Date(d.full_time).getHours();
+                        return hour === i;
+                    }).length);
+
+                    new Chart(document.getElementById('daily-chart'), {
+                        type: 'line',
+                        data: {
+                            labels: dailyLabels,
+                            datasets: [{
+                                label: 'Hazardous Behaviors',
+                                data: dailyData,
+                                borderColor: '#2563eb',
+                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                y: { beginAtZero: true, title: { display: true, text: 'Number of Incidents' } },
+                                x: { title: { display: true, text: 'Hour of Day' } }
+                            }
+                        }
+                    });
+
+                    const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+                    const monthlyLabels = Array.from({ length: daysInMonth }, (_, i) => `Day ${i + 1}`);
+                    const monthlyData = monthlyLabels.map((_, i) => monthDetections.filter(d => {
+                        const day = new Date(d.full_time).getDate();
+                        return day === (i + 1);
+                    }).length);
+
+                    new Chart(document.getElementById('monthly-chart'), {
+                        type: 'line',
+                        data: {
+                            labels: monthlyLabels,
+                            datasets: [{
+                                label: 'Hazardous Behaviors',
+                                data: monthlyData,
+                                borderColor: '#2563eb',
+                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                y: { beginAtZero: true, title: { display: true, text: 'Number of Incidents' } },
+                                x: { title: { display: true, text: 'Day of Month' } }
+                            }
+                        }
+                    });
+                });
+        }
+
+        function saveDetections() {
+            fetch('/save_detections', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to save file');
+                const filename = response.headers.get('Content-Disposition')?.split('filename=')[1] || 'detections.xlsx';
+                return response.blob().then(blob => ({ blob, filename }));
+            })
+            .then(({ blob, filename }) => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                showStatus("Log saved", "success");
+            });
+        }
+
+        function clearDetections() {
+            fetch('/clear_detections', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === "success") {
+                        updateDetectionLog();
+                        showStatus("Log cleared", "success");
+                    }
+                });
+        }
+
+        function uploadVideo() {
+            const fileInput = document.getElementById('videoFile');
+            const video = document.getElementById('uploadedVideo');
+            const file = fileInput.files[0];
+            if (file) {
+                const fileExt = file.name.toLowerCase().split('.').pop();
+                if (!['mp4', 'avi'].includes(fileExt) || (!file.type.match('video/mp4') && !file.type.match('video/avi'))) {
+                    showStatus("Please upload a .mp4 or .avi video", "danger");
+                    return;
+                }
+                const formData = new FormData();
+                formData.append('video', file);
+                fetch('/upload_video', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === "success") {
+                        const blobUrl = URL.createObjectURL(file);
+                        video.src = blobUrl;
+                        video.classList.remove('hidden');
+                        videoUploaded = true;
+                        showStatus("Video uploaded successfully", "success");
+                        video.onerror = () => {
+                            showStatus("Error: Unable to play this video. Please check the file format.", "danger");
+                            videoUploaded = false;
+                        };
+                    } else {
+                        showStatus("Upload failed: " + (data.message || "Unknown error"), "danger");
+                    }
+                })
+                .catch(error => {
+                    showStatus("Error uploading video: " + error.message, "danger");
+                });
+            } else {
+                showStatus("Please select a video", "danger");
+            }
+        }
+
+        function predictVideo() {
+            if (!videoUploaded) {
+                showStatus("Please upload a video first", "danger");
+                return;
+            }
+            isPredicting = true;
+            fetch('/predict_video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === "success") {
+                    document.getElementById('predict-stream').src = '/video_predict_feed?t=' + new Date().getTime();
+                    showStatus("Video prediction started", "success");
+                    setInterval(updateVideoProgress, 500);
+                } else {
+                    isPredicting = false;
+                    showStatus(data.message || "Prediction failed", "danger");
+                }
+            });
+        }
+
+        function clearVideoDetections() {
+            isPredicting = false;
+            fetch('/clear_video_detections', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === "success") {
+                        updateVideoDetectionLog();
+                        document.getElementById('uploadedVideo').classList.add('hidden');
+                        document.getElementById('uploadedVideo').src = '';
+                        document.getElementById('predict-stream').src = '/video_predict_feed';
+                        videoUploaded = false;
+                        showStatus("Video log cleared", "success");
+                    }
+                });
+        }
+
+        function saveVideoResult() {
+            fetch('/save_video_result')
+                .then(response => {
+                    if (!response.ok) throw new Error('Failed to save video');
+                    const filename = response.headers.get('Content-Disposition')?.split('filename=')[1] || 'predicted_video.mp4';
+                    return response.blob().then(blob => ({ blob, filename }));
+                })
+                .then(({ blob, filename }) => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    showStatus("Video result saved", "success");
+                });
+        }
+
+        function updateSensitivityTime() {
+            const sensitivity = document.getElementById('alert-sensitivity').value;
+            const timeInput = document.getElementById('sensitivity-time');
+            if (sensitivity === 'low') {
+                timeInput.value = 1;
+            } else if (sensitivity === 'medium') {
+                timeInput.value = 5;
+            } else if (sensitivity === 'high') {
+                timeInput.value = 10;
+            }
+        }
+
+        function saveSettings() {
+            const sensitivity = document.getElementById('alert-sensitivity').value;
+            const timeInput = document.getElementById('sensitivity-time').value;
+            const time = parseInt(timeInput);
+
+            if (isNaN(time) || time < 1) {
+                showStatus("Please enter a valid time (minimum 1 minute)", "danger");
+                return;
+            }
+
+            fetch('/save_settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sensitivity: sensitivity, time: time })
+            })
+            .then(response => response.json())
+            .then(data => {
+                showStatus("Settings saved successfully", "success");
+            })
+            .catch(error => {
+                showStatus("Error saving settings", "danger");
+            });
+        }
+
+        document.querySelectorAll('.tab-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const tab = e.target.getAttribute('data-tab');
+                document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.add('hidden'));
+                document.getElementById(tab).classList.remove('hidden');
+                document.querySelectorAll('.tab-link').forEach(l => l.classList.remove('active-tab'));
+                e.target.classList.add('active-tab');
+            });
+        });
+
+        document.getElementById('toggle-sidebar').addEventListener('click', toggleSidebar);
+        setInterval(updateDetectionLog, 1000);
+        setInterval(updateVideoDetectionLog, 1000);
+        setInterval(updateCharts, 5000);
+        window.onload = () => {
+            updateFrameSize('camera');
+            updateCharts();
+            updateSensitivityTime();
+            const initialTab = window.location.hash || '#dashboard';
+            document.querySelector(`[data-tab="${initialTab.slice(1)}"]`).classList.add('active-tab');
+            document.getElementById(initialTab.slice(1)).classList.remove('hidden');
+        };
+    </script>
+</body>
+</html>
